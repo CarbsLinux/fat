@@ -25,7 +25,12 @@ dist_manifest() {
         # to which we cannot pass the '{}' of find.
         # shellcheck disable=SC2044
         for pkg in $(find . -type f -name '*.tar.gz' ) ; do
-            printf '%s\t%s\t%s\t%s\n' "$(echo "$pkg" | sed 's/.\///;s/#.*//' )" "$(echo "$pkg" | sed 's/.*#//;s/.tar.gz//')" "${pkg##*/}" "$(sha256sum "$pkg" | awk '{print $1}')" >> manifest
+            pkgname="$(echo "$pkg" | sed 's/.\///;s/#.*//' )" 
+            pkgver="$(echo "$pkg" | sed 's/.*#//;s/.tar.gz//')"
+            pkgbasename="${pkg##*/}"
+            pkgshasum="$(sha256sum "$pkg" | awk '{print $1}')"
+            pkgdepends="$(tar -xOf "$pkg" "./var/db/kiss/installed/$pkgname/depends" | grep -v ' make' | tr '\n' ' ')"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$pkgname" "$pkgver" "$pkgbasename" "$pkgshasum" "$pkgdepends" >> manifest
         done
     )
 }
