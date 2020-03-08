@@ -1,0 +1,106 @@
+#!/bin/sh
+
+out() { printf '\033[1;34m-> \033[m%s\n' "$@" >&2 ;}
+error() { printf '\033[1;31m!> \033[m%s\n' "$@" >&2 ;}
+die() { printf '\033[1;31m!> \033[m%s\n' "$@" >&2 ; exit 1 ;}
+
+usage() {
+    out "fat [g|i|s|u|v] [pkg] [pkg] [pkg]" \
+        "get:         Install package from the given url" \
+        "install:     Install a package" \
+        "search:      Search for a package" \
+        "update:      Update manifests" \
+        "version:     Package installer version"
+    exit 0
+}
+
+fn_update() {
+    [ "$FAT_PATH" ] || die "Please add \$FAT_PATH to your environment before updating"
+    out "Getting the latest manifest"
+    mkdir -p "$HOME/.cache/fat/manifest"
+    rm -f "$HOME/.cache/fat/manifest/"*
+    :> "$HOME/.cache/fat/manifest/list"
+    for dist in $(echo "$FAT_PATH" | tr ';' ' ') ; do
+        manloc="$HOME/.cache/fat/manifest/$(echo "$dist" | sed -E 's/https?:\/\///g;s/\/.*//g')"
+        curl "$dist/manifest" -Lo "$manloc"
+        printf '%s\t%s\n' "$dist" "$manloc" >> "$HOME/.cache/fat/manifest/list"
+    done
+}
+
+fn_checkmanifest() {
+    [ -e "$HOME/.cache/fat/manifest/list" ] ||
+        die "Manifest list could not be found, please run" "fat update"
+    while IFS="$(printf '\t')" read -r dist manloc ; do
+        grep -q "^$1\t" "$manloc" || continue
+        pkginfo="$(grep "^$1\t" "$manloc" | sort -V | sed '$!d')"
+        export dist pkginfo
+        break
+    done < "$HOME/.cache/fat/manifest/list"
+}
+
+fn_get() {
+    prog=1
+    for src in "$@" ; do
+        mkdir -p "$HOME/.cache/fat/fat_get"
+        out "Installing ${src##*/} ($prog/$#)"
+        out "Downloading from $src"
+        curl "$src" -Lo "$HOME/.cache/fat/manual/${src##*/}" || die "Failed to download package from $src"
+        out "Installing ${src##*/} through kiss"
+        kiss i "$HOME/.cache/fat/fat_get/${src##*/}" || die "Failed to install ${src##*/}"
+        prog=$(( prog + 1 ))
+    done
+}
+
+fn_search() {
+    [ -e "$HOME/.cache/fat/manifest/list" ] ||
+        die "Manifest list could not be found, please run" "fat update"
+    while IFS="$(printf '\t')" read -r dist manloc ; do
+        out "$dist:"
+        grep "^$1\t" "$manloc" | sort -V | sed '$!d' | cut -f 1,2
+    done < "$HOME/.cache/fat/manifest/list"
+}
+
+fn_install() {
+    prog=1
+    for pkg in "$@" ; do
+        out "Starting installation for $pkg ($prog/$#)"
+        out "Getting package location"
+        fn_checkmanifest "$pkg" || die "$pkg could not be found on any repository"
+
+        out "Checking package dependencies"
+        pkgdeps="$(echo "$pkginfo" | cut -f 5)"
+
+        for dep in $pkgdeps; do
+            kiss l "$dep" >/dev/null 2>&1 && continue
+            fn_install "$dep"
+        done
+
+        fn_checkmanifest "$pkg" 
+        out "Downloading the package"
+        pkgdest="$(echo "$pkginfo" | cut -f 3)"
+        pkgloc="$dist/$(echo "$pkginfo" | cut -f 3 | sed 's/#/%23/g' )"
+        echo "$pkgloc"
+        mkdir -p "$HOME/.cache/fat/bin"
+        curl "$pkgloc" -fLo "$HOME/.cache/fat/bin/$pkgdest" ||
+            die "Could not download the tarball"
+        kiss i "$HOME/.cache/fat/bin/$pkgdest"
+        
+    done
+}
+
+
+main() {
+    [ "$1" ] || usage
+    prog="$1" ; shift
+    case "$prog" in
+        g|get) fn_get "$@" ;;
+        i|install) fn_install "$@" ;;
+        s|search) fn_search "$@" ;;
+        u|update) fn_update "$@" ;;
+        v|version) out "fat-0.1.0" ;;
+        -h|--help|help|h) usage ;;
+        *) die "$prog is not a valid command" ;;
+    esac
+}
+
+main "$@"
