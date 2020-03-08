@@ -1,0 +1,82 @@
+#!/bin/sh
+
+out() { printf '\033[1;34m-> \033[m%s\n' "$@" ;}
+error() { printf '\033[1;31m!> \033[m%s\n' "$@" >&2 ;}
+die() { printf '\033[1;31m!> \033[m%s\n' "$@" >&2 ; exit 1 ;}
+
+usage() { out "fat-dist [pkg] [pkg] [pkg]" ; exit 0;}
+
+create_dist() {
+    out "Creating the distribution directory to $FAT_DIST"
+    mkdir -p "$FAT_DIST" || die "Could not create $FAT_DIST"
+}
+
+dist_manifest() {
+    # We generate a manifest so that the user can parse
+    # it in order to get package information.
+    (
+        # Re/Create the manifest file
+        cd "$FAT_DIST" || die "Could not change directory to $FAT_DIST"
+        :> manifest
+
+        # Since this is not a complex find command, wrapping
+        # in a for loop is not a dangerous thing to do. I could
+        # also use exec, but this printf command uses subshell
+        # to which we cannot pass the '{}' of find.
+        # shellcheck disable=SC2044
+        for pkg in $(find . -type f -name '*.tar.gz' ) ; do
+            printf '%s\t%s\t%s\t%s\n' "$(echo "$pkg" | sed 's/.\///;s/#.*//' )" "$(echo "$pkg" | sed 's/.*#//;s/.tar.gz//')" "${pkg##*/}" "$(sha256sum "$pkg" | awk '{print $1}')" >> manifest
+        done
+    )
+}
+
+install_pkg() {
+    out "Signing package with GnuPG"
+    gpg --output "$1.asc" --detach-sig "$1" || die "Could not sign the package"
+
+    out "Moving package and signature to $FAT_DIST"
+    mv "$1" "$FAT_DIST/${1##*/}"
+    mv "$1.asc" "$FAT_DIST/${1##*/}.asc"
+}
+
+main() {
+    # We start by doing some checks. Check if the environment
+    # variable exists, create the directory if it hasn't been
+    # created yet.
+    [ "$1" ] || usage
+    case "$1" in -h|--help|help|h) usage ;; esac
+    [ "$FAT_DIST" ] ||
+        die "Please set \$FAT_DIST in your environment variables"
+    [ -d "$FAT_DIST" ] || create_dist
+
+    prog=1
+    for pkg in "$@" ; do
+        out "Installing ${pkg##*/} to $FAT_DIST ($prog/$#)"
+        [ -e "$pkg" ] || die "file $pkg does not exist"
+
+        # Check if the package tarball has the default kiss package
+        # format. Since this is the only way we can get package name,
+        # version, and release values correctly, skip if it doesn't
+        # have the default format.
+        printf '%s' "$pkg" | grep -q '.*#.*-.*.tar.gz' || {
+            error "$pkg does not have the default kiss package format" \
+                  "Skipping $pkg"
+            prog=$(( prog + 1 ))
+            continue
+        }
+
+        install_pkg "$pkg" || die "Could not install $pkg"
+        prog=$(( prog + 1 ))
+    done
+    
+    # I know this doesn't mean if/else, but the 'out' function
+    # will not fail anyway, so it is safe to disable this check.
+    # shellcheck disable=SC2015
+    [ -e "$FAT_DIST/manifest" ] && out "Regenerating manifest" ||
+            out "Generating manifest"
+    dist_manifest
+
+    out "Done!"
+}
+
+main "$@"
