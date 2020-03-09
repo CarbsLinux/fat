@@ -39,8 +39,8 @@ install_pkg() {
     out "Signing package with GnuPG"
     gpg --output "$1.asc" --detach-sig "$1" || die "Could not sign the package"
 
-    out "Moving package and signature to $FAT_DIST"
-    mv "$1" "$FAT_DIST/${1##*/}"
+    out "Copying package and signature to $FAT_DIST"
+    cp "$1" "$FAT_DIST/${1##*/}"
     mv "$1.asc" "$FAT_DIST/${1##*/}.asc"
 }
 
@@ -79,7 +79,7 @@ main() {
     # shellcheck disable=SC2015
     [ -e "$FAT_DIST/manifest" ] && out "Regenerating manifest" ||
             out "Generating manifest"
-    dist_manifest
+    dist_manifest "$@"
 
     out "Done!"
 }

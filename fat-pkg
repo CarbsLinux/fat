@@ -1,0 +1,102 @@
+#!/bin/sh
+
+out() { printf '\033[1;34m-> \033[m%s\n' "$@" >&2 ;}
+error() { printf '\033[1;31m!> \033[m%s\n' "$@" >&2 ;}
+die() { printf '\033[1;31m!> \033[m%s\n' "$@" >&2 ; exit 1 ;}
+
+usage() {
+    out "fat-pkg [pkg]" "" "Builds the given package and its dependencies" \
+        "on a fake-root, and exports all the built packages" "to the current directory."
+    exit 0
+}
+
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/fat"
+
+clean() {
+    out "Unmounting /dev, /proc and /sys from chroot"; {
+        umount "$cache_dir/chroot-$pid/dev"  ||:
+        umount "$cache_dir/chroot-$pid/proc" ||:
+        umount "$cache_dir/chroot-$pid/sys"  ||:
+    }
+
+    rm -r "$cache_dir/chroot-$pid/root/.cache/kiss/bin"
+
+    out "Destroying chroot"
+    rm -rf "$cache_dir/chroot-$pid"
+
+    exit 0
+}
+
+fn_chroot() {
+    [ "$(id -u)" -eq 0 ] || die "You need to run this as root"
+
+    trap 'clean' INT
+
+    FAT_ROOTFS_URL="${FAT_ROOTFS_URL:-https://dl.carbslinux.org/releases/carbs-rootfs.tar.xz}"
+
+    [ -d "$cache_dir/fat-chroot" ] || {
+        [ -f "$cache_dir/fat-chroot.tar.xz" ] || {
+            out "Downloading chroot tarball"
+            curl "$FAT_ROOTFS_URL" -fLo "$cache_dir/fat-chroot.tar.xz"
+        }
+        out "Extracting chroot"
+        mkdir -p "$cache_dir/fat-chroot"
+        tar xvf "$cache_dir/fat-chroot.tar.xz" -C "$cache_dir/fat-chroot"
+    }
+
+    out "Creating temporary chroot"
+    cp -a "$cache_dir/fat-chroot" "$cache_dir/chroot-$pid"
+
+    out "Mounting /dev, /proc and /sys from host"; {
+        mountpoint -q "$cache_dir/chroot-$pid/dev"  || mount -o bind /dev "$cache_dir/chroot-$pid/dev"
+        mountpoint -q "$cache_dir/chroot-$pid/proc" || mount -t proc proc "$cache_dir/chroot-$pid/proc"
+        mountpoint -q "$cache_dir/chroot-$pid/sys"  || mount -t sysfs sys "$cache_dir/chroot-$pid/sys"
+
+    }
+
+    out "Copying /etc/resolv.conf from host"; {
+         [ -f "$cache_dir/chroot-$pid/etc/resolv.conf" ] || cp /etc/resolv.conf "$cache_dir/chroot-$pid/etc"
+    }
+
+    chroot "$cache_dir/chroot-$pid" /usr/bin/env -i \
+           HOME=/root \
+           TERM="$TERM" \
+           SHELL=/bin/sh \
+           USER=root \
+           KISS_ASROOT=1 \
+           FAT_UPDATE="$FAT_UPDATE" \
+           CFLAGS="-march=x86-64 -mtune=generic -pipe -Os" \
+           CXXFLAGS="-march=x86-64 -mtune=generic -pipe -Os" \
+           MAKEFLAGS="-j$(nproc 2>/dev/null || echo 1)" \
+           /usr/bin/sh -c "
+           set -e
+           /etc/ssl/update-certdata.sh
+           . /etc/profile 
+           rm -r $HOME/.cache/kiss/bin
+           [ \"\$FAT_UPDATE\" ] && {
+             yes '' | /usr/bin/kiss update
+             yes '' | /usr/bin/kiss update
+             rm -r $HOME/.cache/kiss/bin
+           }
+           yes '' | /usr/bin/kiss build $1"
+
+
+}
+
+
+main() {
+    [ "$1" ] || usage
+    case "$1" in -h|--help|h|help) usage ;; esac
+    
+    pid=$$
+
+    mkdir -p "$cache_dir"
+
+    fn_chroot "$1"
+
+    out "Copying built packages"
+    install -Dm644 -t "$cache_dir/dist" "$cache_dir/chroot-$pid/root/.cache/kiss/bin/"*
+    clean
+}
+
+main "$@"
